@@ -6,5 +6,5 @@ This repository is meant to hold all of the processing and analysis code for the
 
 -When a branch is no longer necessary, delete it
 
--**NO DATA or Binary Files** should be uploaded to the repository, they are costly to store and we have limited large file storage
+-**NO DATA or Binary Files** should be uploaded to the repository if they will be written to or changed often, they are costly to store and we have limited large file storage
 

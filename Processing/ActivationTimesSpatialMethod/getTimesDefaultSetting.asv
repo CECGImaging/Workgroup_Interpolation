@@ -1,0 +1,135 @@
+%% Script that returns activation and recovery times with some default settings
+% geom.Heart: struct with relevant fields:
+%   vertices: n-by-3 matrix with node locations
+%   faces: m-by-3 matrix faces of vertices
+%   NrVertices: length(n), NrTriangles: length(m)
+%   samplingRate (also present in geom.Body)
+
+% pickDepth: number of levels of neighbours you would like to incorporate
+% when calculating the local AT. 1: only direct neighbours. 2: also include
+% neighbours of neighbours, etc. We typically use 4 for faster calculations,
+% 8 for final calculations. Neighbours which are further away, have less
+% weight
+
+% beats: struct with different beats (i.e. beats(1), beats(2), etc.).
+% Relevant fields:
+%   potsTikhonov: n-by-time matrix of tikhonov potentials on the epicardium
+%   QRSind: indices of wh
+
+
+
+
+% GET THE TIMINGS FROM EACH EGM
+clear D H Ltan;
+if ~exist('pickDepth')
+    pickDepth = 8;
+end
+if ~exist('Dstruct') || pickDepth > length(Dstruct)
+    % new code (march/april 2017)
+    heart = struct(); heart.node = geom.Heart.vertices; heart.face = geom.Heart.faces;
+    % SPATIAL DERIVATIVES
+    fprintf('Computing Surface Derivatives and Laplacian.\n');
+    maxdepth=pickDepth;
+    [D,H,Ltan, Dstruct, Hstruct, Ltanstruct,AdjMtrxStruct] = getSpatialOperators(geom.Heart,maxdepth);
+end;
+
+% If calculated, pick correct D,H,Ltan based on depth
+D = Dstruct{pickDepth}; 
+%H = Hstruct{pickDepth}; % not used
+%Ltan = Ltanstruct{pickDepth}; % not used
+
+% Analysis settings NEW dec16 / april 17
+clear settings postsmoothingsettings;
+% spatiotemp:
+settings.method = 'spatiotemp';
+% settings.Dtan = Dtan;
+settings.Dtan = D;
+% settings.twindow = 41;
+% % temponly
+settings.method = 'temponly';
+settings.splineSmoothingParam = 0.001; % default 0.001; is also used for pre-smoothing in spatiotemp method!
+% for post-estimation smoothing
+postsmoothingsettings.dopostsmoothing = false;
+postsmoothingsettings.Ltan = mesh_laplacian(geom.Heart.vertices,geom.Heart.faces); % Ltan; warning('For smoothing using new Ltan as well, not old (my) Ltan! effects unknown');
+postsmoothingsettings.regparamrange = 200;
+postsmoothingsettings.geomobj = geom.Heart;
+postsmoothingsettingsForOrigin = postsmoothingsettings;
+postsmoothingsettingsForOrigin.dopostsmoothing = true;
+postsmoothingsettingsForOrigin.regparamrange = 20000;
+postsmoothingsettingsForOrigin.Ltan = mesh_laplacian(geom.Heart.vertices,geom.Heart.faces);
+doOriginWithSmoothing = true;
+samplingrate = geom.Body.samplingRate;
+
+%% Calculate geometry resolution
+% meshdetails_WHM
+
+%% Times
+for beatnr=1:length(beats)
+    %% Get activation
+    type = 'activation';
+%         offset = -beats(beatnr).QRSind(1); offset = offset/(geom.Heart.samplingRate/1000);
+    offset=0;
+    % activation
+    settings.twindow = 9; % 9 for activation, 41 for recovery
+    settings.method = 'spatiotemp';
+    [ depTime, ~, depolLocationIndex, ~, timeconfidence, maxslope ] = getTimeFromElectrogram( beats(beatnr).potsTikhonov, beats(beatnr).QRSind, samplingrate, settings, postsmoothingsettings  );
+    depTime = depTime+offset;
+    beats(beatnr).depLocationTikh = geom.Heart.vertices(depolLocationIndex,:);
+    beats(beatnr).depTimingInMsTikhAllNodes = depTime;
+    beats(beatnr).depTimeConfidence = timeconfidence;
+    beats(beatnr).depTimeSlope = maxslope; % slope of the signal
+    
+    if doOriginWithSmoothing
+        settings.method = 'spatiotemp';
+        [ ~, ~, depolLocationIndex, ~, ~ ] = getTimeFromElectrogram( beats(beatnr).potsTikhonov, beats(beatnr).QRSind, samplingrate, settings, postsmoothingsettingsForOrigin  );
+        beats(beatnr).depLocationTikh = geom.Heart.vertices(depolLocationIndex,:);
+    end
+    
+    beats(beatnr).depolIndexTikhAllNodes=[]; % outdated?
+    beats(beatnr).depolIndexTikh = []; % outdated?
+        
+    %% Get recovery
+    type = 'recovery';
+%         offset = -beats(beatnr).QRSind(1); offset = offset/(geom.Heart.samplingRate/1000);
+    offset=0;
+    
+    % recovery
+    settings.twindow = 41; % 9 for activation, 41 for recovery DOES NOT WORK ANYMORE IF YOU DO SPLINE SMOOTHING ONLY
+    settings.splineSmoothingParam = 0.000001; % use more smoothing (lower number) for pre-smoothing in repolarizaiton than the default 0.001, eg: 0.000001
+    STind = beats(beatnr).STind(1:end);
+    settings.method = 'spatiotemp';
+%     settings.method = 'temponly';
+    pots = beats(beatnr).potsTikhonov;
+%     if true
+%         warning('Doing additional T wave filtering on epicardial reconstructoin!');
+%         beatNr=beatnr;
+%         % do additional T wave filteirng (if not performed previousy)
+%         % Filter T-wave on 40Hz
+%         N=2;
+%         nfc=2*(1/samplingrate)*40;
+%         [B,A]=butter(N,nfc,'low');
+%         potsfiltered=pots;
+%         if size(pots,2)-beats(beatNr).STind(end)>=0
+%             for i=1:size(pots,1)
+%                 potsfiltered(i,beats(beatNr).STind(1)-20:beats(beatNr).STind(end)+20)=  filtfilt(B,A,pots(i,beats(beatNr).STind(1)-20:beats(beatNr).STind(end)+20)); %Low-pass filter
+%             end
+%         else
+%             for i=1:size(pots,1)
+%                 potsfiltered(i,beats(beatNr).STind(1)-20:end)=  filtfilt(B,A,pots(i,beats(beatNr).STind(1)-20:end)); %Low-pass filter
+%             end
+%         end
+%     end
+%     potsfiltered = getFilteredSignal(pots,samplingrate,STind);
+%     nr = 150; figure; plot(pots(nr,:)); hold on; plot(potsfiltered(nr,:),'r');
+    [ repTime, ~, ~, ~, timeconfidence, maxslope ] = getTimeFromElectrogram( -pots, STind, samplingrate, settings, postsmoothingsettings  );
+    repTime = repTime+offset;
+    beats(beatnr).repolTimeInMsTikh = repTime; % heette repolTimeInMsTikh in pt
+    beats(beatnr).repolTimeConfidence = timeconfidence;
+    beats(beatnr).repolTimeSlope = maxslope; % slope of the signal
+    
+    beats(beatnr).repolIndexTikhAllNodes = []; % outdated?
+    beats(beatnr).repolIndexTikh = []; % outdated?    
+    
+end
+
+
